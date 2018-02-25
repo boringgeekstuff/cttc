@@ -21,7 +21,6 @@ var audio = {
             source.disconnect(processor);
             processor.disconnect(audio.context.destination);
             stream.getTracks().forEach(t=>t.stop());
-            setTimeout(()=>emitter.emit('data',null));
         });
         return emitter;
     }),
@@ -131,7 +130,7 @@ var web = {
 			ws.onerror = null;
 			ws.onclose = ()=>{
 				outEE.off('data', sendData)
-				EventEmitter.emitEvery('shutdown', [inEE, outEE]);
+				EventEmitter.emitEvery('shutdown', undefined, [inEE, outEE]);
 			};
 			outEE.on('data', sendData);
 			EventEmitter.onceEvery('shutdown', ()=>{

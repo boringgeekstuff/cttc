@@ -43,12 +43,67 @@ function recordNoiseDropping(noiseLevel){
 				toArray.on('drain',resolve);
 			});
 		}
-	});	
+	});
 }
 
 
 function recordNoiseDroppingPlayTest(noiseLevel){
 	recordNoiseDropping(noiseLevel).then(Promise.callDelay.bind(null,10000)).then(playBuffers);
+}
+
+function analyseNoiseSilenceDuration(noiseLevel){
+	return audio.record().then(r=>{
+		var toArray = audio.toArray();
+		var noiseAnalysis = analysis.thresholdAnalysis(noiseLevel);
+		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c))],(()=>{
+			var isSilence = true;
+			var duration = 0;
+			return new EventEmitter().on('data',(isCurrentChunkSilent)=>{
+				if(isCurrentChunkSilent == isSilence){
+					duration++;
+				}else{
+					log(isSilence,duration);
+					duration = 1;
+					isSilence = !isSilence;
+				}
+			});
+		})());
+	});
+}
+
+function holdingHandler(maxBuffersHold){
+	var powerThrough = false;
+	var queue = [];
+	return (d)=>{
+		if(powerThrough){
+			if(d.length>0){
+				return d;
+			}else{
+				powerThrough=false;
+				return [];
+			}
+		}else{
+			if(d.length>0){
+				if(queue.length+1>maxBuffersHold){
+					var result = float32Concat(queue.concat(d));
+					queue = [];
+					powerThrough = true;
+					return result;
+				}else{
+					queue.push(d);
+					return [];
+				}
+			}else{
+				if(queue.length>0){
+					var result = float32Concat(queue.concat(d));
+					queue = [];
+					return result;
+				}else{
+					return [];
+				}
+			}
+		}
+	};
 }
 
 function setUpVOIP(noiseLevel){
@@ -57,8 +112,16 @@ function setUpVOIP(noiseLevel){
 		web.wconnect(location.pathname),
 		audio.record()
 	]).then(([[inEE,outEE],r])=>{
-		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c)?c:[])],new Intermitter(outEE,{data:(a)=>a.length>0}));
+		window.onbeforeunload = function(e) {
+			r.emit('shutdown');
+		}
+		new Audio('/res/audio/connected.wav').play();
+		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c)?c:[]),Pipe.syncFn(holdingHandler(4))],new Intermitter(outEE,{data:(a)=>a.length>0}));
 		pipeline(inEE,[audioTools.toFloat32, audioTools.toAudioBuffer()],audio.play());
+		outEE.once('shutdown',()=>{
+			new Audio('/res/audio/disconnected.wav').play();
+			r.emit('shutdown');
+		});
 	});
 }
 

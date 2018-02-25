@@ -32,7 +32,9 @@ httpServer.on('upgrade', (request, socket, head) => {
         server.handleUpgrade(request, socket, head, (ws) => {
             if(rooms[roomId]===true){
                 ws.close();
-            }else if(rooms[roomId]){
+            }
+            ws.on('error',log);
+            if(rooms[roomId]){
                 var perf = createPerf();
                 var user = rooms[roomId];
                 user.on('message',(m)=>{

@@ -38,15 +38,15 @@ function EventEmitter(){
         return ee;
     };
     ee.once = function(event,handler){
-        handler = (h=>()=>{
+        handler = (h=>(e,payload)=>{
             ee.off(event,handler);
-            h();
+            h(e,payload);
         })(handler);
         ee.on(event,handler);
         return ee;
     };
     ee.emit = function(event,payload){
-        handlers[event].callEach(ee,payload,event);
+        handlers[event].slice(0).callEach(ee,payload,event);
         return ee;
     };
 }
@@ -109,4 +109,11 @@ function float32Concat(iterable){
 	var result = new Float32Array(iterable.reduce((a,b)=>a+b.length,0));
 	iterable.reduce((o,a)=>{result.set(a,o);return o+a.length},0);
 	return result;
+}
+
+function createLogReturnHandler(result){
+    return function(){
+        log.apply(null,arguments)
+        return result;
+    };
 }
