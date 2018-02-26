@@ -99,7 +99,16 @@ var analysis = {
         }
         return false;
     },
-	minmidmax : (arr)=>{
+    thresholdSkipAnalysis : (threshold,skipFactor)=>(chunk)=>{
+        for(var i=0;i<(chunk.length>>skipFactor);i++){
+        	var soundLevel = chunk[i<<skipFactor];
+            if(soundLevel<-threshold || soundLevel>threshold){
+                return true;
+            }
+        }
+        return false;
+    },
+    minmidmax : (arr)=>{
 		arr.sort((a,b)=>a-b);
 		return {
 			min:arr[0],

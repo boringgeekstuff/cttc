@@ -51,14 +51,18 @@ function recordNoiseDroppingPlayTest(noiseLevel){
 	recordNoiseDropping(noiseLevel).then(Promise.callDelay.bind(null,10000)).then(playBuffers);
 }
 
-function analyseNoiseSilenceDuration(noiseLevel){
+function analyseNoiseSilenceDuration(noiseLevel,skipFactor){
 	return audio.record().then(r=>{
 		var toArray = audio.toArray();
 		var noiseAnalysis = analysis.thresholdAnalysis(noiseLevel);
-		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c))],(()=>{
+		var noiseSkipAnalysis = analysis.thresholdSkipAnalysis(noiseLevel,skipFactor);
+		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb([noiseAnalysis(c),noiseSkipAnalysis(c)])],(()=>{
 			var isSilence = true;
 			var duration = 0;
-			return new EventEmitter().on('data',(isCurrentChunkSilent)=>{
+			return new EventEmitter().on('data',([isCurrentChunkSilent,isCurrentChunkSkipSilent])=>{
+				if(isCurrentChunkSilent!==isCurrentChunkSkipSilent){
+					log('Misanalysis '  + isCurrentChunkSilent + ' ' + isCurrentChunkSkipSilent)
+				}
 				if(isCurrentChunkSilent == isSilence){
 					duration++;
 				}else{
@@ -107,7 +111,7 @@ function holdingHandler(maxBuffersHold){
 }
 
 function setUpVOIP(noiseLevel){
-	var noiseAnalysis = analysis.thresholdAnalysis(noiseLevel);
+	var noiseAnalysis = analysis.thresholdSkipAnalysis(noiseLevel,4);
 	Promise.all([
 		web.wconnect(location.pathname),
 		audio.record()
@@ -116,7 +120,7 @@ function setUpVOIP(noiseLevel){
 			r.emit('shutdown');
 		}
 		new Audio('/res/audio/connected.wav').play();
-		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c)?c:[]),Pipe.syncFn(holdingHandler(4))],new Intermitter(outEE,{data:(a)=>a.length>0}));
+		pipeline(r,[audioTools.getFirstChannel,audioTools.copyFloat32,(c,cb)=>cb(noiseAnalysis(c)?c:[]),Pipe.syncFn(holdingHandler(1))],new Intermitter(outEE,{data:(a)=>a.length>0}));
 		pipeline(inEE,[audioTools.toFloat32, audioTools.toAudioBuffer()],audio.play());
 		outEE.once('shutdown',()=>{
 			new Audio('/res/audio/disconnected.wav').play();
