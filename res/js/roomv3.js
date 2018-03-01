@@ -31,7 +31,7 @@ function sequentialProcessing(fn,done=Function.nope){
 		done(result);
 		if(queue.length){
 			if(queue.length>3){
-				alert('Queue too long ' + queue.length);
+				log('Queue too long ' + queue.length);
 			}
 			fn(queue.shift(),cb);
 		}else{
