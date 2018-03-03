@@ -81,25 +81,6 @@ function recorder({context,sampleRate,channels,bufferSize}=audio){
     })
 }
 
-function player({context,sampleRate,channels}=audio){
-	var queuedPlayer = sequentialProcessing((source,onEnded)=>{
-    	source.onended = onEnded;
-    	source.connect(context.destination);
-    	source.start(0);
-    });
-	return (buffer)=>{
-		buffer = new Float32Array(buffer);
-	    var source = context.createBufferSource(channels, buffer.length, sampleRate);
-	    var abuffer = context.createBuffer(channels, buffer.length, sampleRate);
-	    for(var i=0;i<channels;i++){
-	        abuffer.copyToChannel(buffer,i,0);
-	    }
-		source.buffer = abuffer;
-		queuedPlayer(source);
-	};
-}
-
-
 function asBufferSource(buffer,{context,sampleRate,channels}=audio){
     buffer = new Float32Array(buffer);
     var source = context.createBufferSource(channels, buffer.length, sampleRate);
@@ -258,7 +239,7 @@ function analyseMaxSoundLevel(duration,analyseDelay=0){
 	});
 }
 
-function comfortingNoise(loudness=globalSettings.threshold/magic){
+function comfortingNoise(loudness=globalSettings.threshold*Math.pow(magic,-4)){
     var context = new AudioContext();
     var node = context.createBufferSource();
     var alignment = 4096;

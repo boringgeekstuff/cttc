@@ -86,41 +86,6 @@ function roomHandler(request, socket, head,roomId){
     }
 }
 
-function roomv3Hanlder_(request, socket, head, roomId){
-    if(roomsv3[roomId]==true){
-        socket.destroy();
-    }else{
-        server.handleUpgrade(request, socket, head, (ws) => {
-            if(roomsv3[roomId]==true){
-                ws.close();
-            }else if(roomsv3[roomId]){
-                roomsv3[roomId](ws);
-            }else{
-                roomsv3[roomId] = function(ws2){
-                    var wsOnMessage = (m)=>{
-                        ws2.send(m);
-                    };
-                    ws.on('message',wsOnMessage);
-                    ws.on('close',()=>{
-                        ws2.close();
-                    });
-                    var ws2OnMessage = (m)=>{
-                        ws.send(m);
-                    };
-                    ws2.on('message',ws2OnMessage);
-                    ws2.on('close',()=>{
-                        ws.close();
-                    });
-                    roomsv3[roomId] = true;
-                };
-                ws.on('close',()=>{
-                    delete roomsv3[roomId];
-                });
-                log('Waiting in a room ' + roomId);
-            }
-        });
-    }
-}
 var NOBODY_CONNECTED_TIMEOUT = 5000;
 
 function roomv3Hanlder(request, socket, head, roomId){
@@ -132,7 +97,7 @@ function roomv3Hanlder(request, socket, head, roomId){
             if(roomsv3[roomId]==true || !roomsv3[roomId]){
                 ws.close();
             }else{
-                log('Visitor entrering room ' + roomId);
+                log('Visitor entering room ' + roomId);
                 roomsv3[roomId](ws);
             }
         });
@@ -142,6 +107,12 @@ function roomv3Hanlder(request, socket, head, roomId){
             delete roomsv3[roomId];
             socket.destroy();
         },NOBODY_CONNECTED_TIMEOUT);
+        socket.on('close',()=>{
+            clearTimeout(nobodyConnectedTimeout);
+            log('Host left room early ' + roomId);
+            socket.destroy();
+            delete roomsv3[roomId];
+        });
         log('Host waiting in a room ' + roomId);
         roomsv3[roomId] = function(ws2){
             clearTimeout(nobodyConnectedTimeout);
@@ -149,6 +120,7 @@ function roomv3Hanlder(request, socket, head, roomId){
             server.handleUpgrade(request, socket, head, (ws) => {
                 ws.on('error',log);
                 if(ws2.readyState === WebSocket.OPEN){
+                    log('Users met ' + roomId);
                     ws.on('message',m=>ws2.send(m));
                     ws.on('close',()=>{
                         log('Host leaving room ' + roomId);
@@ -161,6 +133,7 @@ function roomv3Hanlder(request, socket, head, roomId){
                         ws.close();
                     });
                 }else{
+                    log('Host left already ' + roomId);
                     delete roomsv3[roomId];
                     ws.close();
                     ws2.close();
