@@ -15,6 +15,7 @@ comforting noise
 
 */
 
+var magic = 1.61803398875;
 var audio = {
 	context: new AudioContext(),
 	sampleRate : 44100,
@@ -72,8 +73,8 @@ function recorder({context,sampleRate,channels,bufferSize}=audio){
         	},
         	stop:()=>{
         		processor.onaudioprocess = null;
-        		source.disconnect(processor);
-            	processor.disconnect(context.destination);
+        		source.disconnect();
+            	processor.disconnect();
             	stream.getTracks().forEach(t=>t.stop());
         	}
         };
@@ -98,6 +99,65 @@ function player({context,sampleRate,channels}=audio){
 	};
 }
 
+
+function asBufferSource(buffer,{context,sampleRate,channels}=audio){
+    buffer = new Float32Array(buffer);
+    var source = context.createBufferSource(channels, buffer.length, sampleRate);
+    var abuffer = context.createBuffer(channels, buffer.length, sampleRate);
+    for(var i=0;i<channels;i++){
+        abuffer.copyToChannel(buffer,i,0);
+    }
+	source.buffer = abuffer;
+	return source;
+}
+
+function nextPlayer({context,sampleRate,channels}=audio){
+    var currentQueue = 0;
+    var queue = [];
+    var rawQueue = [];
+    var currentPlaying = 0;
+    function playSource(source){
+    	source.onended = ()=>{
+    		source.disconnect(context.destination);
+    		next();
+    	};
+    	source.connect(context.destination);
+    	source.start(0);
+    }
+    function next(){
+        if(currentQueue-=currentPlaying>0){
+            if(queue.length>0){
+                var [source,length] = queue.shift();
+                currentPlaying = length;
+                playSource(source);
+            }else{
+                currentPlaying = 1;
+                playSource(asBufferSource(rawQueue.shift()));
+            }
+        }else{
+            currentPlaying=0;
+        }
+    }
+    return (buffer)=>{
+        currentQueue++;
+        if(currentPlaying==0){
+            currentPlaying = 1;
+            playSource(asBufferSource(buffer),next);
+        }else{
+            rawQueue.push(buffer);
+            while(queue.length<2 && rawQueue.length>0){
+                queue.push([asBufferSource(rawQueue.shift()),1]);
+            }
+            var appropriateBufferSize = Math.floor(currentQueue.length/2);
+            if(appropriateBufferSize>0 && rawQueue.length>=appropriateBufferSize){
+                console.log(currentQueue.length,queue.length,rawQueue.length);
+                queue.push([asBufferSource(float32Concat(rawQueue.splice(0,appropriateBufferSize))),appropriateBufferSize]);
+            }
+        }
+    };
+}
+
+
 function connectWebsocket(url){
 	return new Promise((resolve,reject)=>{
 		var ws = new WebSocket('ws'+window.location.origin.substring(4) + url);
@@ -118,10 +178,16 @@ function connectWebsocket(url){
 function voipV3(url,isSilence){
 	var track = createStatTracker(document.getElementById('stats'));
 	return recorder().then(r=>{
-		var play = player();
+		var play = nextPlayer();
+		var connected = false;
+		var noise;
 		function connect(){
 			r.replaceConsumer(null);
 			return connectWebsocket(url).then((ws)=>{
+				window.onbeforeunload = function(e) {
+					ws.close();
+				}
+				noise = comfortingNoise()
 				r.replaceConsumer((buffer)=>{
 					if(!globalSettings.mute && !isSilence(buffer)){
 						track('send');
@@ -133,12 +199,24 @@ function voipV3(url,isSilence){
 				ws.setOnMessage(e=>{
 					track('receive');
 					play(e);
-				}).setOnClose(connect);
-				log('ws set up')
-			},()=>new Audio('/res/audio/disconnected.wav').play());
+				}).setOnClose(()=>{
+					if(noise){
+						noise();
+					}
+					log('Attempting reconnect');
+					connect();
+				});
+			},()=>{
+				new Audio('/res/audio/disconnected.wav').play();
+				r.stop();
+				if(!connected){
+					throw 'Connection rejected';
+				}
+			});
 		}
 		
 		return connect().then(()=>{
+			connected = true;
 			new Audio('/res/audio/connected.wav').play();
 			r.start();
 		},log);
@@ -180,8 +258,26 @@ function analyseMaxSoundLevel(duration,analyseDelay=0){
 	});
 }
 
+function comfortingNoise(loudness=globalSettings.threshold/magic){
+    var context = new AudioContext();
+    var node = context.createBufferSource();
+    var alignment = 4096;
+    var buffer = context.createBuffer(1, Math.floor(context.sampleRate/alignment)*alignment, context.sampleRate)
+    data = buffer.getChannelData(0);
+    for (var i = 0; i < data.length; i++) {
+        data[i] = Math.random()*loudness;
+    }    
+    node.buffer = buffer;
+    node.loop = true;
+    node.connect(context.destination);
+    node.start(0);
+    return ()=>{
+    	node.loop = false;
+    	node.disconnect();
+    };
+}
+
 document.getElementById('calibrateButton').addEventListener('click',function(){
-	var magic = 1.61803398875;
 	alert('Оценка фонового шума, после нажатия OK в течении 4 секунд постарайтесь поддерживать тишину');
 	analyseMaxSoundLevel(2000,1000).then((silenceMax)=>{	
 		alert('Оценка уровня звука при разговоре, после нажатия OK в течении 4 секунд скажите несколько слов обычным голосом');
