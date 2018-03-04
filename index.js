@@ -19,8 +19,8 @@ Object.entries({
     '/roomv3/:roomId':'/roomv3.html',
 }).forEach(([url,file])=>{
     app.get(url,(req, res) => {
-        if(production && req.header['x-forwarded-proto'] !== 'https'){
-            res.redirect(`https://${req.header('host')}${req.url}`)
+        if(production && req.get('X-Forwarded-Proto') !== 'https'){
+            res.redirect(`https://${req.hostname}${req.url}`)
         }else{
             res.sendFile(__dirname + file);
         }
