@@ -1,24 +1,7 @@
-/*
-
-cttc extended logging points
-
-playsound queue (abstract mechanism?) logger
-ws send load logger
-sound level analysis load logger
-server-side buffers per second logger
-
-cttc improvements
-
-ws reconnect(attempts-left-based)
-server-side overhaul
-comforting noise
-
-*/
-
 var magic = 1.61803398875;
 var audio = {
 	context: new AudioContext(),
-	sampleRate : 44100,
+	sampleRate : {min:44100,ideal:44100,max:44100},
 	channels : 1,
 	bufferSize : 4096
 };
@@ -58,6 +41,7 @@ function recorder({context,sampleRate,channels,bufferSize}=audio){
 			channelCount:channels
 	}}).then((stream)=>{
         var source = context.createMediaStreamSource(stream);
+        leak=source;
         var processor = context.createScriptProcessor(bufferSize, channels, channels);
         return {
         	start:function(){
@@ -84,7 +68,7 @@ function recorder({context,sampleRate,channels,bufferSize}=audio){
 function asBufferSource(buffer,{context,sampleRate,channels}=audio){
     buffer = new Float32Array(buffer);
     var source = context.createBufferSource(channels, buffer.length, sampleRate);
-    var abuffer = context.createBuffer(channels, buffer.length, sampleRate);
+    var abuffer = context.createBuffer(channels, buffer.length, sampleRate.ideal);
     for(var i=0;i<channels;i++){
         abuffer.copyToChannel(buffer,i,0);
     }
@@ -162,12 +146,26 @@ function voipV3(url,isSilence){
 		var play = nextPlayer();
 		var connected = false;
 		var noise;
+		function onClose(){
+			document.getElementById('connectButton').disabled = false;
+			new Audio('/res/audio/disconnected.wav').play();
+			r.stop();
+			if(!connected){
+				throw 'Connection rejected';
+			}
+		}
 		function connect(){
 			r.replaceConsumer(null);
 			return connectWebsocket(url).then((ws)=>{
-				window.onbeforeunload = function(e) {
+				var socketClosedByUser = false;
+				function closeWebSocket(){
+					socketClosedByUser = true;
 					ws.close();
 				}
+				var disconnectButton = document.getElementById('disconnectButton')
+				disconnectButton.disabled = false;
+				disconnectButton.addEventListener('click', closeWebSocket);
+				window.onbeforeunload = closeWebSocket;
 				noise = comfortingNoise()
 				r.replaceConsumer((buffer)=>{
 					if(!globalSettings.mute && !isSilence(buffer)){
@@ -181,19 +179,20 @@ function voipV3(url,isSilence){
 					track('receive');
 					play(e);
 				}).setOnClose(()=>{
+					var disconnectButton = document.getElementById('disconnectButton')
+					disconnectButton.disabled = true;
+					disconnectButton.removeEventListener('click', closeWebSocket);
 					if(noise){
 						noise();
 					}
-					log('Attempting reconnect');
-					connect();
+					if(!socketClosedByUser){
+						log('Attempting reconnect');
+						connect();
+					}else{
+						onClose();
+					}
 				});
-			},()=>{
-				new Audio('/res/audio/disconnected.wav').play();
-				r.stop();
-				if(!connected){
-					throw 'Connection rejected';
-				}
-			});
+			},onClose);
 		}
 		
 		return connect().then(()=>{
@@ -210,7 +209,8 @@ var globalSettings = {
 	skipFactor:4
 };
 
-document.getElementById('connectButton').addEventListener('click',()=>{
+document.getElementById('connectButton').addEventListener('click',function(){
+	this.disabled = true;
 	var {threshold,skipFactor} = globalSettings;
 	voipV3(location.pathname,(chunk)=>{
 		for(var i=0;i<(chunk.length>>skipFactor);i++){
@@ -280,6 +280,7 @@ document.getElementById('muteButton').addEventListener('click',function(){
 });
 
 function createStatTracker(table){
+	table.innerHTML = '';
 	var trackers = {};
 	setInterval(()=>{
 		Object.values(trackers).forEach((stat)=>{

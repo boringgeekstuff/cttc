@@ -1,5 +1,7 @@
 log=console.log;
 
+var production = process.env.NODE_ENV === 'production';
+
 var PORT = process.env.PORT || 8080;
 
 var express = require('express');
@@ -12,11 +14,17 @@ var app = express();
 
 app.use('/res',express.static('res'));
 
-app.get('/room/:roomId',(req,res)=>{
-    res.sendFile(__dirname + '/room.html');
-});
-app.get('/roomv3/:roomId',(req,res)=>{
-    res.sendFile(__dirname + '/roomv3.html');
+Object.entries({
+    '/room/:roomId':'/room.html',
+    '/roomv3/:roomId':'/roomv3.html',
+}).forEach(([url,file])=>{
+    app.get(url,(req, res) => {
+        if(production && req.header['x-forwarded-proto'] !== 'https'){
+            res.redirect(`https://${req.header('host')}${req.url}`)
+        }else{
+            res.sendFile(__dirname + file);
+        }
+    });
 });
 
 var httpServer = http.createServer(app);
@@ -88,52 +96,68 @@ function roomHandler(request, socket, head,roomId){
 
 var NOBODY_CONNECTED_TIMEOUT = 5000;
 
+var clientsCounter = 0;
+
 function roomv3Hanlder(request, socket, head, roomId){
+    var clientId = ++clientsCounter;
     if(roomsv3[roomId]==true){
         socket.destroy();
     }else if(roomsv3[roomId]){
         server.handleUpgrade(request, socket, head, (ws) => {
             ws.on('error',log);
             if(roomsv3[roomId]==true || !roomsv3[roomId]){
+                log(`Visitor ${clientId} missed host in ${roomId}`);
                 ws.close();
             }else{
-                log('Visitor entering room ' + roomId);
+                log(`Visitor ${clientId} entering room ${roomId}`);
                 roomsv3[roomId](ws);
             }
         });
     }else{
         var nobodyConnectedTimeout = setTimeout(()=>{
-            log('Host kicked from room ' + roomId);
+            log(`Host ${clientId} kicked from room ${roomId}`);
             delete roomsv3[roomId];
             socket.destroy();
         },NOBODY_CONNECTED_TIMEOUT);
+        var visitorFound = false;
         socket.on('close',()=>{
-            clearTimeout(nobodyConnectedTimeout);
-            log('Host left room early ' + roomId);
-            socket.destroy();
-            delete roomsv3[roomId];
+            if(!visitorFound){
+                clearTimeout(nobodyConnectedTimeout);
+                log(`Host ${clientId} left room early ${roomId}`);
+                delete roomsv3[roomId];
+            }
         });
-        log('Host waiting in a room ' + roomId);
+        log(`Host ${clientId} waiting in a room ${roomId}`);
         roomsv3[roomId] = function(ws2){
+            socket.on('close',()=>{
+                if(!visitorFound){
+                    log(`Host ${clientId} left just as visitor was entering at ${roomId}`);
+                    ws2.close();
+                }
+            });
             clearTimeout(nobodyConnectedTimeout);
             roomsv3[roomId] = true;
             server.handleUpgrade(request, socket, head, (ws) => {
-                ws.on('error',log);
+                visitorFound = true;
+                ws.on('error',(e)=>{
+                    log(`Error with host ${clientId} in room ${roomId}`);
+                    log(e);
+                });
                 if(ws2.readyState === WebSocket.OPEN){
-                    log('Users met ' + roomId);
+                    log(`Users met in room ${roomId}, host was ${clientId}`);
                     ws.on('message',m=>ws2.send(m));
                     ws.on('close',()=>{
-                        log('Host leaving room ' + roomId);
+                        log(`Host ${clientId} leaving room ${roomId}`);
                         delete roomsv3[roomId];
                         ws2.close();
                     });
                     ws2.on('message',m=>ws.send(m));
                     ws2.on('close',()=>{
-                        log('Visitor leaving room ' + roomId)
+                        log(`Visitor leaving room ${roomId} hosted by ${clientId}`);
                         ws.close();
                     });
                 }else{
-                    log('Host left already ' + roomId);
+                    log(`Visitor ${clientId} left already ${roomId}`);
                     delete roomsv3[roomId];
                     ws.close();
                     ws2.close();
@@ -158,4 +182,4 @@ function createPerf(){
     };
 }
 
-httpServer.listen(PORT,()=>log('App up on http://localhost:' + PORT));
+httpServer.listen(PORT,()=>log(`App up on http://localhost:${PORT} in ${production?'production':'dev'} mode`));
