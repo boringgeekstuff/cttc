@@ -1,12 +1,11 @@
 var magic = 1.61803398875;
+
+
 var audio = {
-	context: new AudioContext(),
-	sampleRate : {min:44100,ideal:44100,max:44100},
+	context: Function.lazy(()=>new AudioContext()),
 	channels : 1,
 	bufferSize : 4096
 };
-
-Function.nope = ()=>{};
 
 function sequentialProcessing(fn,done=Function.nope){
 	var processing = false;
@@ -32,27 +31,31 @@ function sequentialProcessing(fn,done=Function.nope){
 	};
 }
 
-function recorder({context,sampleRate,channels,bufferSize}=audio){
+
+function recorder({context,channels,bufferSize}=audio){
 	return navigator.mediaDevices.getUserMedia({audio:{
 			autoGainControl:false,
 			echoCancellation:true,
 			noiseSuppression:true,
-			sampleRate:sampleRate,
+			sampleRate:context().sampleRate,
 			channelCount:channels
 	}}).then((stream)=>{
-        var source = context.createMediaStreamSource(stream);
-        leak=source;
-        var processor = context.createScriptProcessor(bufferSize, channels, channels);
+        var source = context().createMediaStreamSource(stream);
+        var processor = context().createScriptProcessor(bufferSize, channels, channels);
         return {
         	start:function(){
         		source.connect(processor);
-        		processor.connect(context.destination);
+        		processor.connect(context().destination);
         		return this;
         	},
         	replaceConsumer:function(consumer){
-        		processor.onaudioprocess = (consumer)?function(event){
-		            consumer(event.inputBuffer.getChannelData(0));
-		        }:null;
+				if(consumer){
+					processor.onaudioprocess = (event)=>{
+			            consumer(event.inputBuffer.getChannelData(0));
+			        };
+				}else{
+					processor.onaudioprocess = null;
+				}
         		return this;
         	},
         	stop:()=>{
@@ -65,10 +68,10 @@ function recorder({context,sampleRate,channels,bufferSize}=audio){
     })
 }
 
-function asBufferSource(buffer,{context,sampleRate,channels}=audio){
+function asBufferSource(buffer,sampleRate,{context,channels}=audio){
     buffer = new Float32Array(buffer);
-    var source = context.createBufferSource(channels, buffer.length, sampleRate);
-    var abuffer = context.createBuffer(channels, buffer.length, sampleRate.ideal);
+    var source = context().createBufferSource();
+    var abuffer = context().createBuffer(channels, buffer.length, sampleRate);
     for(var i=0;i<channels;i++){
         abuffer.copyToChannel(buffer,i,0);
     }
@@ -76,52 +79,18 @@ function asBufferSource(buffer,{context,sampleRate,channels}=audio){
 	return source;
 }
 
-function nextPlayer({context,sampleRate,channels}=audio){
-    var currentQueue = 0;
-    var queue = [];
-    var rawQueue = [];
-    var currentPlaying = 0;
-    function playSource(source){
+function player(sampleRate,{context,channels}=audio){
+	log('player at ' + sampleRate)
+	var queuedPlayer = sequentialProcessing((source,onEnded)=>{
     	source.onended = ()=>{
-    		source.disconnect(context.destination);
-    		next();
+    		source.disconnect(context().destination);
+    		onEnded();
     	};
-    	source.connect(context.destination);
+    	source.connect(context().destination);
     	source.start(0);
-    }
-    function next(){
-        if(currentQueue-=currentPlaying>0){
-            if(queue.length>0){
-                var [source,length] = queue.shift();
-                currentPlaying = length;
-                playSource(source);
-            }else{
-                currentPlaying = 1;
-                playSource(asBufferSource(rawQueue.shift()));
-            }
-        }else{
-            currentPlaying=0;
-        }
-    }
-    return (buffer)=>{
-        currentQueue++;
-        if(currentPlaying==0){
-            currentPlaying = 1;
-            playSource(asBufferSource(buffer),next);
-        }else{
-            rawQueue.push(buffer);
-            while(queue.length<2 && rawQueue.length>0){
-                queue.push([asBufferSource(rawQueue.shift()),1]);
-            }
-            var appropriateBufferSize = Math.floor(currentQueue.length/2);
-            if(appropriateBufferSize>0 && rawQueue.length>=appropriateBufferSize){
-                console.log(currentQueue.length,queue.length,rawQueue.length);
-                queue.push([asBufferSource(float32Concat(rawQueue.splice(0,appropriateBufferSize))),appropriateBufferSize]);
-            }
-        }
-    };
+    });
+	return (buffer)=>(buffer.byteLength>0)?queuedPlayer(asBufferSource(buffer,sampleRate)):undefined;
 }
-
 
 function connectWebsocket(url){
 	return new Promise((resolve,reject)=>{
@@ -140,68 +109,99 @@ function connectWebsocket(url){
 	})
 }
 
-function voipV3(url,isSilence){
-	var track = createStatTracker(document.getElementById('stats'));
+function voipV3(url,sampleRate,shouldSend){
 	return recorder().then(r=>{
-		var play = nextPlayer();
-		var connected = false;
-		var noise;
-		function onClose(){
-			document.getElementById('connectButton').disabled = false;
-			new Audio('/res/audio/disconnected.wav').play();
-			r.stop();
-			if(!connected){
-				throw 'Connection rejected';
-			}
-		}
+		var play = player(sampleRate);
+		var stateChangeListener = Function.nope;
+		var close = Function.nope;
+		var disconnecting = false;
 		function connect(){
-			r.replaceConsumer(null);
 			return connectWebsocket(url).then((ws)=>{
-				var socketClosedByUser = false;
-				function closeWebSocket(){
-					socketClosedByUser = true;
-					ws.close();
-				}
-				var disconnectButton = document.getElementById('disconnectButton')
-				disconnectButton.disabled = false;
-				disconnectButton.addEventListener('click', closeWebSocket);
-				window.onbeforeunload = closeWebSocket;
-				noise = comfortingNoise()
+				close = ()=>{
+					disconnecting = true;
+					ws.close()
+				};
+				stateChangeListener('active');
 				r.replaceConsumer((buffer)=>{
-					if(!globalSettings.mute && !isSilence(buffer)){
-						track('send');
+					if(shouldSend(buffer)){
 						ws.send(buffer);
-					}else{
-						track('silence frame');
 					}
 				});
 				ws.setOnMessage(e=>{
-					track('receive');
 					play(e);
 				}).setOnClose(()=>{
-					var disconnectButton = document.getElementById('disconnectButton')
-					disconnectButton.disabled = true;
-					disconnectButton.removeEventListener('click', closeWebSocket);
-					if(noise){
-						noise();
-					}
-					if(!socketClosedByUser){
-						log('Attempting reconnect');
-						connect();
+					close = Function.nope;
+					r.replaceConsumer(null);
+					if(disconnecting){
+						r.stop();
+						stateChangeListener('disconnected');
 					}else{
-						onClose();
+						stateChangeListener('reconnecting');
+						connect().catch(e=>{
+							r.stop();
+							stateChangeListener('disconnected');
+						})
 					}
 				});
-			},onClose);
+			});
 		}
 		
 		return connect().then(()=>{
-			connected = true;
-			new Audio('/res/audio/connected.wav').play();
 			r.start();
-		},log);
+			return {
+				setStateChangeListener : fn=>stateChangeListener = fn,
+				close : ()=>close()
+			};
+		});
 	});
 }
+
+function connectToVoip(url,sampleRate,shouldSend,onDisconnect){
+	var disconnectButton = document.getElementById('disconnectButton');
+	function playDisconnectSound(){
+		new Audio('/res/audio/disconnected.wav').play();
+	}
+	voipV3(url,sampleRate,shouldSend).then(voip=>{
+		new Audio('/res/audio/connected.wav').play();
+		var stopNoise = comfortingNoise();
+		window.onbeforeunload = voip.close;
+		disconnectButton.disabled=false;
+		disconnectButton.addEventListener('click',voip.close);
+		voip.setStateChangeListener(state=>{
+			switch(state){
+				case 'active':
+					disconnectButton.disabled = false;
+					stopNoise = comfortingNoise();
+					break;
+				case 'reconnecting':
+					disconnectButton.disabled = true;
+					stopNoise();
+					break;
+				case 'disconnected':
+					stopNoise();
+					window.onbeforeunload = null;
+					document.getElementById('connectButton').disabled = false;
+					disconnectButton.disabled = true;
+					disconnectButton.removeEventListener('click', voip.close);
+					playDisconnectSound();
+					onDisconnect()
+					break;
+			}
+		});
+	},(e)=>{log(e);playDisconnectSound();});
+}
+
+function connectToControl(){
+	this.disabled = true;
+	connectWebsocket('/control').then(ws=>{
+		ws.setOnClose(()=>log('control close')).setOnMessage(data=>{
+			data = JSON.parse(data);
+			connectToVoip('/room/' + data.room,data.sampleRate,simpleThresholdAnalysisFunction,()=>this.disabled=false);
+		}).send(JSON.stringify({sampleRate:audio.context().sampleRate}));
+	})
+}
+
+document.getElementById('connectButton').addEventListener('click',connectToControl);
 
 var globalSettings = {
 	mute:false,
@@ -209,48 +209,31 @@ var globalSettings = {
 	skipFactor:4
 };
 
-document.getElementById('connectButton').addEventListener('click',function(){
-	this.disabled = true;
-	var {threshold,skipFactor} = globalSettings;
-	voipV3(location.pathname,(chunk)=>{
-		for(var i=0;i<(chunk.length>>skipFactor);i++){
-        	var soundLevel = chunk[i<<skipFactor];
-            if(soundLevel<-threshold || soundLevel>threshold){
-                return false;
-            }
+function simpleThresholdAnalysisFunction(chunk,{threshold,skipFactor}=globalSettings){
+	if(globalSettings.mute){
+		return false;
+	}
+	for(var i=0;i<(chunk.length>>skipFactor);i++){
+    	var soundLevel = chunk[i<<skipFactor];
+        if(soundLevel<-threshold || soundLevel>threshold){
+            return true;
         }
-        return true;
-	});
-});
-
-function analyseMaxSoundLevel(duration,analyseDelay=0){
-	return recorder().then(r=>{
-		r.start();
-		return Promise.delay(analyseDelay).then(()=>{
-			var max = -1;
-			r.replaceConsumer((chunk)=>{
-				max = chunk.reduce((p,c)=>Math.max(p,Math.abs(c)),max);
-			});
-			return Promise.delay(duration).then(()=>{
-				r.stop();
-				return max
-			});
-		})
-	});
+    }
+    return false;
 }
 
-function comfortingNoise(loudness=globalSettings.threshold*Math.pow(magic,-4)){
-    var context = new AudioContext();
-    var node = context.createBufferSource();
+
+function comfortingNoise(loudness=globalSettings.threshold*Math.pow(magic,-4),{context}=audio){
+    var node = context().createBufferSource();
     var alignment = 4096;
-    var buffer = context.createBuffer(1, Math.floor(context.sampleRate/alignment)*alignment, context.sampleRate)
+    var buffer = context().createBuffer(1, Math.floor(context().sampleRate/alignment)*alignment, context().sampleRate)
     data = buffer.getChannelData(0);
     for (var i = 0; i < data.length; i++) {
         data[i] = Math.random()*loudness;
     }    
     node.buffer = buffer;
     node.loop = true;
-    node.connect(context.destination);
+    node.connect(context().destination);
     node.start(0);
     return ()=>{
     	node.loop = false;
@@ -258,26 +241,10 @@ function comfortingNoise(loudness=globalSettings.threshold*Math.pow(magic,-4)){
     };
 }
 
-document.getElementById('calibrateButton').addEventListener('click',function(){
-	alert('Оценка фонового шума, после нажатия OK в течении 4 секунд постарайтесь поддерживать тишину');
-	analyseMaxSoundLevel(2000,1000).then((silenceMax)=>{	
-		alert('Оценка уровня звука при разговоре, после нажатия OK в течении 4 секунд скажите несколько слов обычным голосом');
-		return analyseMaxSoundLevel(3000).then(voiceMax=>{
-			if(silenceMax==0 || voiceMax==0){
-				alert('Зафиксирован нулевой уровень звука, возможно микрофон не подключен или работает некорректно');
-			}else if(silenceMax*magic*magic>voiceMax){
-				alert('Разница между тишиной и голосом слишком маленькая, возможно тест проведенн некорректно');
-			}else{
-				log(globalSettings.threshold=silenceMax*magic);
-				alert('Похоже, все хорошо. Настройки фонового шума обновлены');				
-			}
-		})
-	});
-});
-
 document.getElementById('muteButton').addEventListener('click',function(){
 	this.innerHTML = (globalSettings.mute = !globalSettings.mute)?'Включить микрофон':'Выключить микрофон';
 });
+
 
 function createStatTracker(table){
 	table.innerHTML = '';
@@ -301,3 +268,39 @@ function createStatTracker(table){
 		trackers[stat][1]+=increment;
 	};
 }
+
+// sound level analysis
+
+function analyseMaxSoundLevel(duration,analyseDelay=0){
+	return recorder().then(r=>{
+		r.start();
+		return Promise.delay(analyseDelay).then(()=>{
+			var max = -1;
+			r.replaceConsumer((chunk)=>{
+				max = chunk.reduce((p,c)=>Math.max(p,Math.abs(c)),max);
+			});
+			return Promise.delay(duration).then(()=>{
+				r.stop();
+				return max
+			});
+		})
+	});
+}
+
+
+document.getElementById('calibrateButton').addEventListener('click',function(){
+	alert('Оценка фонового шума, после нажатия OK в течении 4 секунд постарайтесь поддерживать тишину');
+	analyseMaxSoundLevel(2000,1000).then((silenceMax)=>{	
+		alert('Оценка уровня звука при разговоре, после нажатия OK в течении 4 секунд скажите несколько слов обычным голосом');
+		return analyseMaxSoundLevel(3000).then(voiceMax=>{
+			if(silenceMax==0 || voiceMax==0){
+				alert('Зафиксирован нулевой уровень звука, возможно микрофон не подключен или работает некорректно');
+			}else if(silenceMax*magic*magic>voiceMax){
+				alert('Разница между тишиной и голосом слишком маленькая, возможно тест проведенн некорректно');
+			}else{
+				log(globalSettings.threshold=silenceMax*magic);
+				alert('Похоже, все хорошо. Настройки фонового шума обновлены');				
+			}
+		})
+	});
+});

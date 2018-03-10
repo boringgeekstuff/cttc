@@ -15,8 +15,7 @@ var app = express();
 app.use('/res',express.static('res'));
 
 Object.entries({
-    '/room/:roomId':'/room.html',
-    '/roomv3/:roomId':'/roomv3.html',
+    '/room/':'/room.html'
 }).forEach(([url,file])=>{
     app.get(url,(req, res) => {
         if(production && req.get('X-Forwarded-Proto') !== 'https'){
@@ -33,90 +32,51 @@ server = new WebSocketServer({
     noServer:true
 });
 
-var rooms = {};
-var roomsv3 = {};
+
+var websocketHandlers = [
+    [/\/room\/([0-9]+)/,roomHandler],
+    [/control/,controlHandler]
+];
+
 
 httpServer.on('upgrade', (request, socket, head) => {
     var pathname = url.parse(request.url).pathname;
 
-    var match = pathname.match(/\/room(v3)?\/([0-9]+)/);
-    if(match){
-        var roomId = match[2];
-        if(match[1]){
-            roomv3Hanlder(request, socket, head, roomId);
-        }else{
-            roomHandler(request, socket, head, roomId);
+    if(!websocketHandlers.some(([regex,handler])=>{
+        var match = pathname.match(regex);
+        if(match){
+            handler.call(null,request,socket,head,...match.slice(1));
+            return true;
         }
-    }else{
+    })){
         socket.destroy();
     }
 });
 
-function roomHandler(request, socket, head,roomId){
-    if(rooms[roomId]!=true){
-        server.handleUpgrade(request, socket, head, (ws) => {
-            if(rooms[roomId]===true){
-                log('close socket: room taken');
-                ws.close();
-                return;
-            }
-            ws.on('error',log);
-            if(rooms[roomId]){
-                //var perf = createPerf();
-                log('talk initiated');
-                var user = rooms[roomId];
-                user.on('message',(m)=>{
-                    ws.send(m);
-                });
-                ws.on('message',(m)=>{
-                    user.send(m);
-                });
-                user.on('close',()=>{
-                    log('close socket');
-                    ws.close();
-                });
-                ws.on('close',()=>{
-                    log('close socket');
-                    user.close();                    
-                });
-                rooms[roomId] = true;
-            }else{
-                log('Sitting in a room ' + roomId);
-                rooms[roomId] = ws;
-                ws.on('close',()=>{
-                    log('leave room ' + roomId);
-                    delete rooms[roomId];
-                });
-            }
-        });
-    }else{
-        socket.destroy();
-    }
-}
-
+var rooms = {};
 var NOBODY_CONNECTED_TIMEOUT = 5000;
 
 var clientsCounter = 0;
 
-function roomv3Hanlder(request, socket, head, roomId){
+function roomHandler(request, socket, head, roomId){
     var clientId = ++clientsCounter;
-    if(roomsv3[roomId]==true){
+    if(rooms[roomId]==true){
         socket.destroy();
-    }else if(roomsv3[roomId]){
+    }else if(rooms[roomId]){
         server.handleUpgrade(request, socket, head, (ws) => {
             ws.on('error',log);
-            if(roomsv3[roomId]==true || !roomsv3[roomId]){
+            if(rooms[roomId]==true || !rooms[roomId]){
                 log(`Visitor ${clientId} missed host in ${roomId}`);
                 ws.close();
             }else{
                 log(`Visitor ${clientId} entering room ${roomId}`);
-                roomsv3[roomId](ws);
+                rooms[roomId](ws);
             }
         });
     }else{
         var nobodyConnectedTimeout = setTimeout(()=>{
             log(`Host ${clientId} kicked from room ${roomId}`);
-            delete roomsv3[roomId];
+            delete rooms[roomId];
             socket.destroy();
         },NOBODY_CONNECTED_TIMEOUT);
         var visitorFound = false;
@@ -124,11 +84,11 @@ function roomv3Hanlder(request, socket, head, roomId){
             if(!visitorFound){
                 clearTimeout(nobodyConnectedTimeout);
                 log(`Host ${clientId} left room early ${roomId}`);
-                delete roomsv3[roomId];
+                delete rooms[roomId];
             }
         });
         log(`Host ${clientId} waiting in a room ${roomId}`);
-        roomsv3[roomId] = function(ws2){
+        rooms[roomId] = function(ws2){
             socket.on('close',()=>{
                 if(!visitorFound){
                     log(`Host ${clientId} left just as visitor was entering at ${roomId}`);
@@ -136,7 +96,7 @@ function roomv3Hanlder(request, socket, head, roomId){
                 }
             });
             clearTimeout(nobodyConnectedTimeout);
-            roomsv3[roomId] = true;
+            rooms[roomId] = true;
             server.handleUpgrade(request, socket, head, (ws) => {
                 visitorFound = true;
                 ws.on('error',(e)=>{
@@ -148,7 +108,7 @@ function roomv3Hanlder(request, socket, head, roomId){
                     ws.on('message',m=>ws2.send(m));
                     ws.on('close',()=>{
                         log(`Host ${clientId} leaving room ${roomId}`);
-                        delete roomsv3[roomId];
+                        delete rooms[roomId];
                         ws2.close();
                     });
                     ws2.on('message',m=>ws.send(m));
@@ -158,13 +118,39 @@ function roomv3Hanlder(request, socket, head, roomId){
                     });
                 }else{
                     log(`Visitor ${clientId} left already ${roomId}`);
-                    delete roomsv3[roomId];
+                    delete rooms[roomId];
                     ws.close();
                     ws2.close();
                 }
             });
         };
     }
+}
+
+var waitingUser = null;
+var roomCounter = 1;
+function controlHandler(request, socket, head){
+    server.handleUpgrade(request, socket, head, (ws) => {
+        ws.on('message',m=>{
+            var data = JSON.parse(m);
+            log('connected user, sample rate ' + data.sampleRate);
+            if(waitingUser){
+                var room = roomCounter++;
+                ws.send(JSON.stringify({room:room,sampleRate:waitingUser.sampleRate}));
+                ws.close();
+                waitingUser.ws.send(JSON.stringify({room:room,sampleRate:data.sampleRate}));
+                waitingUser.ws.close();
+            }else{
+                waitingUser = {
+                    ws:ws,
+                    sampleRate:data.sampleRate
+                };
+                ws.on('close',()=>{
+                    waitingUser=null;
+                })
+            }
+        });
+    });
 }
 
 

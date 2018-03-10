@@ -4,6 +4,14 @@ Args = {
 	swap : (fn)=>(a,b,...rest)=>fn(b,a,...rest)
 };
 
+Function.nope = ()=>{};
+
+Function.return = v=>()=>v;
+
+Function.lazy = function(factory){
+    var resolver = ()=>(resolver=Function.return(factory()))();
+    return ()=>resolver();
+};
 
 Array.prototype.callEach = function(self,...args){
     this.applyEach(self,args);
