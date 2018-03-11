@@ -2,7 +2,7 @@ var magic = 1.61803398875;
 
 
 var audio = {
-	context: Function.lazy(()=>new AudioContext()),
+	context: Function.lazy(()=>new AudioContext({latencyHint:'playback'})),
 	channels : 1,
 	bufferSizeBySampleRate : {"44100":4096,"48000":8192}
 };
@@ -80,16 +80,19 @@ function asBufferSource(buffer,sampleRate,{context,channels}=audio){
 }
 
 function player(sampleRate,{context,channels}=audio){
-	log('player at ' + sampleRate)
-	var queuedPlayer = sequentialProcessing((source,onEnded)=>{
-    	source.onended = ()=>{
-    		source.disconnect(context().destination);
-    		onEnded();
-    	};
-    	source.connect(context().destination);
-    	source.start(0);
-    });
-	return (buffer)=>(buffer.byteLength>0)?queuedPlayer(asBufferSource(buffer,sampleRate)):undefined;
+	log('player at ' + sampleRate);
+	var currentSource = null;
+	return (buffer)=>{
+		var source = asBufferSource(buffer,sampleRate);
+		source.connect(context().destination);
+		if(currentSource){
+			currentSource.onended = ()=>source.start(0);
+		}else{
+			source.start(0);
+		}
+		source.onended = ()=>currentSource=null;
+		currentSource = source;
+	};
 }
 
 function connectWebsocket(url){
@@ -196,6 +199,8 @@ function connectToControl(){
 	connectWebsocket('/control').then(ws=>{
 		ws.setOnClose(()=>log('control close')).setOnMessage(data=>{
 			data = JSON.parse(data);
+			log('Connecting to room' + data.room);
+			ws.close();
 			connectToVoip('/room/' + data.room,data.sampleRate,simpleThresholdAnalysisFunction,()=>this.disabled=false);
 		}).send(JSON.stringify({sampleRate:audio.context().sampleRate}));
 	})

@@ -2,20 +2,13 @@ const fs = require('fs');
 
 log=(...args)=>{
     console.log.apply(console,args);
-    fs.appendFile('logs/main.log',args.join(',')+'\n',(e)=>{
+    fs.appendFile('log.txt',args.join(',')+'\n',(e)=>{
         if(e){
             console.log('Error writing to log file', e);
             log=console.log;//disable file logging - it seems to be broken anyway
         }
     });
 };
-
-fs.mkdir('logs',function(e){
-    if(e && e.code !== 'EEXIST'){
-        console.log('Error creating log folder',e);
-        log=console.log
-    }
-});
 
 var production = process.env.NODE_ENV === 'production';
 
@@ -71,7 +64,7 @@ httpServer.on('upgrade', (request, socket, head) => {
 });
 
 var rooms = {};
-var NOBODY_CONNECTED_TIMEOUT = 5000;
+var NOBODY_CONNECTED_TIMEOUT = 1000;
 
 var clientsCounter = 0;
 
@@ -94,7 +87,7 @@ function roomHandler(request, socket, head, roomId){
         var nobodyConnectedTimeout = setTimeout(()=>{
             log(`Host ${clientId} kicked from room ${roomId}`);
             delete rooms[roomId];
-            socket.destroy();
+            request.destroy();
         },NOBODY_CONNECTED_TIMEOUT);
         var visitorFound = false;
         socket.on('close',()=>{
@@ -149,28 +142,31 @@ var roomCounter = 1;
 function controlHandler(request, socket, head){
     server.handleUpgrade(request, socket, head, (ws) => {
         ws.on('error',log);
+        ws.on('close',()=>{
+            log('Control ws disconnected');
+        });
         ws.on('message',m=>{
             var data = JSON.parse(m);
             log('connected user, sample rate ' + data.sampleRate);
             if(waitingUser){
                 var room = roomCounter++;
                 ws.send(JSON.stringify({room:room,sampleRate:waitingUser.sampleRate}));
-                ws.close();
                 waitingUser.ws.send(JSON.stringify({room:room,sampleRate:data.sampleRate}));
-                waitingUser.ws.close();
+                waitingUser = null
             }else{
-                waitingUser = {
+                var thisWaitingUser = waitingUser = {
                     ws:ws,
                     sampleRate:data.sampleRate
                 };
                 ws.on('close',()=>{
-                    waitingUser=null;
+                    if(thisWaitingUser === waitingUser){
+                        waitingUser=null;
+                    }
                 })
             }
         });
     });
 }
-
 
 function createPerf(){
     var time = process.hrtime();
