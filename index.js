@@ -131,6 +131,7 @@ var waitingUser = null;
 var roomCounter = 1;
 function controlHandler(request, socket, head){
     server.handleUpgrade(request, socket, head, (ws) => {
+        ws.on('error',log);
         ws.on('message',m=>{
             var data = JSON.parse(m);
             log('connected user, sample rate ' + data.sampleRate);
@@ -169,3 +170,7 @@ function createPerf(){
 }
 
 httpServer.listen(PORT,()=>log(`App up on http://localhost:${PORT} in ${production?'production':'dev'} mode`));
+
+process.on('uncaughtException', err => {
+    console.error(err);
+});

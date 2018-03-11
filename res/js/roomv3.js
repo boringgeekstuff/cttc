@@ -4,7 +4,7 @@ var magic = 1.61803398875;
 var audio = {
 	context: Function.lazy(()=>new AudioContext()),
 	channels : 1,
-	bufferSize : 4096
+	bufferSizeBySampleRate : {"44100":4096,"48000":8192}
 };
 
 function sequentialProcessing(fn,done=Function.nope){
@@ -32,7 +32,7 @@ function sequentialProcessing(fn,done=Function.nope){
 }
 
 
-function recorder({context,channels,bufferSize}=audio){
+function recorder({context,channels}=audio){
 	return navigator.mediaDevices.getUserMedia({audio:{
 			autoGainControl:false,
 			echoCancellation:true,
@@ -41,7 +41,7 @@ function recorder({context,channels,bufferSize}=audio){
 			channelCount:channels
 	}}).then((stream)=>{
         var source = context().createMediaStreamSource(stream);
-        var processor = context().createScriptProcessor(bufferSize, channels, channels);
+        var processor = context().createScriptProcessor(audio.bufferSizeBySampleRate[context().sampleRate], channels, channels);
         return {
         	start:function(){
         		source.connect(processor);
