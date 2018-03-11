@@ -152,7 +152,7 @@ function voipV3(url,sampleRate,shouldSend){
 				setStateChangeListener : fn=>stateChangeListener = fn,
 				close : ()=>close()
 			};
-		});
+		},e=>{r.stop();throw e;});
 	});
 }
 

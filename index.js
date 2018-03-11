@@ -1,4 +1,21 @@
-log=console.log;
+const fs = require('fs');
+
+log=(...args)=>{
+    console.log.apply(console,args);
+    fs.appendFile('logs/main.log',args.join(',')+'\n',(e)=>{
+        if(e){
+            console.log('Error writing to log file', e);
+            log=console.log;//disable file logging - it seems to be broken anyway
+        }
+    });
+};
+
+fs.mkdir('logs',function(e){
+    if(e && e.code !== 'EEXIST'){
+        console.log('Error creating log folder',e);
+        log=console.log
+    }
+});
 
 var production = process.env.NODE_ENV === 'production';
 
@@ -172,5 +189,5 @@ function createPerf(){
 httpServer.listen(PORT,()=>log(`App up on http://localhost:${PORT} in ${production?'production':'dev'} mode`));
 
 process.on('uncaughtException', err => {
-    console.error(err);
+    log('uncaught',err);
 });
