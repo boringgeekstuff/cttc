@@ -87,41 +87,34 @@ function mp3convertor(kbps=128,sampleRate=audio.context().sampleRate,{channels}=
 	};
 }
 
-function mp3player(mimeCodec='audio/mpeg'){
+function mp3player(mimeCodec='audio/mpeg',sampleRate){
 	var audio = new Audio();
 	var source = new MediaSource();
 	audio.src = URL.createObjectURL(source);
 
 	return new Promise((resolve)=>{
 		log('create player');
-	  	source.addEventListener('sourceopen', function(){
-	  		if(source.sourceBuffers.length > 0){
-	  			return;
-	  		}
+		source.addEventListener('sourceopen', function(){
+			if(source.sourceBuffers.length > 0){
+				return;
+			}
 			log('source open');
 			var sourceBuffer = source.addSourceBuffer(mimeCodec);
-		  	var processing = false;
-		  	var queue = [];
+			var queue = [];
 			resolve(i16buffer=>{
-				log(audio.paused);
-				if(processing){
-					log('queued' + queue.length);
+				if(sourceBuffer.updating){
 					queue.push(i16buffer);
 				}else{
-					processing = true;
-					log('played' + queue.length)
 					sourceBuffer.appendBuffer(i16buffer);
 				}
 			});
 			sourceBuffer.addEventListener('updateend', function () {
 				if(queue.length>0){
 					sourceBuffer.appendBuffer(queue.shift());
-				}else{
-					processing = false;
 				}
-		  	});
+			});
 		});
-  		audio.play();
+		audio.play();
 	});
 }
 
@@ -171,20 +164,13 @@ function voipV3(url,sampleRate,shouldSend){
 					ws.close()
 				};
 				stateChangeListener('active');
-				var shouldFlush = true;
 				r.replaceConsumer((buffer)=>{
-					var shouldSendBuffer = shouldSend(buffer);
-					if(shouldSendBuffer){
-						shouldFlush = true;
+					if(shouldSend(buffer)){
 						ws.send(convertor.convert(buffer));
 					}else{
-						if(shouldFlush){
-							ws.send(convertor.convert(buffer));
-							var data = convertor.flush(buffer);
-							if(data.length){
-								ws.send(data);
-							}
-							shouldFlush = false;
+						var data = convertor.flush();
+						if(data.length>0){
+							ws.send(data);
 						}
 					}
 				});
