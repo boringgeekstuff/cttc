@@ -79,6 +79,52 @@ function asBufferSource(buffer,sampleRate,{context,channels}=audio){
 	return source;
 }
 
+function mp3convertor(kbps=128,sampleRate=audio.context().sampleRate,{channels}=audio){
+	var mp3encoder = new lamejs.Mp3Encoder(channels,sampleRate,kbps);
+	return {
+		convert:(f32buffer)=>mp3encoder.encodeBuffer(new Int16Array(f32buffer.map((s)=>(s<0)?s*0x8000:s*0x7FFF))),
+		flush:()=>mp3encoder.flush()
+	};
+}
+
+function mp3player(mimeCodec='audio/mpeg'){
+	var audio = new Audio();
+	var source = new MediaSource();
+	audio.src = URL.createObjectURL(source);
+
+	return new Promise((resolve)=>{
+		log('create player');
+	  	source.addEventListener('sourceopen', function(){
+	  		if(source.sourceBuffers.length > 0){
+	  			return;
+	  		}
+			log('source open');
+			var sourceBuffer = source.addSourceBuffer(mimeCodec);
+		  	var processing = false;
+		  	var queue = [];
+			resolve(i16buffer=>{
+				log(audio.paused);
+				if(processing){
+					log('queued' + queue.length);
+					queue.push(i16buffer);
+				}else{
+					processing = true;
+					log('played' + queue.length)
+					sourceBuffer.appendBuffer(i16buffer);
+				}
+			});
+			sourceBuffer.addEventListener('updateend', function () {
+				if(queue.length>0){
+					sourceBuffer.appendBuffer(queue.shift());
+				}else{
+					processing = false;
+				}
+		  	});
+		});
+  		audio.play();
+	});
+}
+
 function player(sampleRate,{context,channels}=audio){
 	log('player at ' + sampleRate);
 	var currentSource = null;
@@ -113,8 +159,8 @@ function connectWebsocket(url){
 }
 
 function voipV3(url,sampleRate,shouldSend){
-	return recorder().then(r=>{
-		var play = player(sampleRate);
+	return Promise.all([recorder(),mp3player()]).then(([r,play])=>{
+		var convertor = mp3convertor();
 		var stateChangeListener = Function.nope;
 		var close = Function.nope;
 		var disconnecting = false;
@@ -125,9 +171,21 @@ function voipV3(url,sampleRate,shouldSend){
 					ws.close()
 				};
 				stateChangeListener('active');
+				var shouldFlush = true;
 				r.replaceConsumer((buffer)=>{
-					if(shouldSend(buffer)){
-						ws.send(buffer);
+					var shouldSendBuffer = shouldSend(buffer);
+					if(shouldSendBuffer){
+						shouldFlush = true;
+						ws.send(convertor.convert(buffer));
+					}else{
+						if(shouldFlush){
+							ws.send(convertor.convert(buffer));
+							var data = convertor.flush(buffer);
+							if(data.length){
+								ws.send(data);
+							}
+							shouldFlush = false;
+						}
 					}
 				});
 				ws.setOnMessage(e=>{
