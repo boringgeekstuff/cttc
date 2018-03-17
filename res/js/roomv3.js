@@ -35,6 +35,7 @@ function sequentialProcessing(fn,done=Function.nope){
 function recorder({context,channels}=audio){
 	return navigator.mediaDevices.getUserMedia({audio:{
 			autoGainControl:false,
+			googAutoGainControl:false,
 			echoCancellation:true,
 			noiseSuppression:true,
 			sampleRate:context().sampleRate,
@@ -42,21 +43,22 @@ function recorder({context,channels}=audio){
 	}}).then((stream)=>{
         var source = context().createMediaStreamSource(stream);
         var processor = context().createScriptProcessor(audio.bufferSizeBySampleRate[context().sampleRate], channels, channels);
+        var consumer = null;
+        var bufferingProcessor = createSoundBufferingProcessor(context().sampleRate,(data)=>{
+			if(consumer){
+					consumer(data);
+			}
+        });
+        processor.onaudioprocess = (event)=>bufferingProcessor(event.inputBuffer.getChannelData(0));
         return {
         	start:function(){
         		source.connect(processor);
         		processor.connect(context().destination);
         		return this;
         	},
-        	replaceConsumer:function(consumer){
-				if(consumer){
-					processor.onaudioprocess = (event)=>{
-			            consumer(event.inputBuffer.getChannelData(0));
-			        };
-				}else{
-					processor.onaudioprocess = null;
-				}
-        		return this;
+			replaceConsumer:function(c){
+				consumer = c;
+				return this;
         	},
         	stop:()=>{
         		processor.onaudioprocess = null;
@@ -79,7 +81,7 @@ function asBufferSource(buffer,sampleRate,{context,channels}=audio){
 	return source;
 }
 
-function mp3convertor(kbps=128,sampleRate=audio.context().sampleRate,{channels}=audio){
+function mp3convertor(sampleRate=audio.context().sampleRate,kbps=128,{channels}=audio){
 	var mp3encoder = new lamejs.Mp3Encoder(channels,sampleRate,kbps);
 	return {
 		convert:(f32buffer)=>mp3encoder.encodeBuffer(new Int16Array(f32buffer.map((s)=>(s<0)?s*0x8000:s*0x7FFF))),
@@ -87,11 +89,15 @@ function mp3convertor(kbps=128,sampleRate=audio.context().sampleRate,{channels}=
 	};
 }
 
-function mp3player(mimeCodec='audio/mpeg',sampleRate){
+function mp3player(sampleRate,flushTime,mimeCodec='audio/mpeg'){
 	var audio = new Audio();
 	var source = new MediaSource();
 	audio.src = URL.createObjectURL(source);
+	var silence = mp3convertor(sampleRate).convert(new Float32Array(Math.ceil(flushTime/1000*sampleRate)));
 
+
+	var flushingFrom = 2;
+	var flushingUntil = 2 + Math.ceil(2000/flushTime);
 	return new Promise((resolve)=>{
 		log('create player');
 		source.addEventListener('sourceopen', function(){
@@ -101,15 +107,32 @@ function mp3player(mimeCodec='audio/mpeg',sampleRate){
 			log('source open');
 			var sourceBuffer = source.addSourceBuffer(mimeCodec);
 			var queue = [];
+			var flushingPhase = 0;
+			var flushInterval = setInterval(()=>{
+				if(!sourceBuffer.updating){
+					if(queue.length>0){
+						flushingPhase = 0;
+						sourceBuffer.appendBuffer(queue.shift());
+					}else{
+						if(flushingPhase>=flushingFrom && flushingPhase<flushingUntil){
+							log('flushing');
+							sourceBuffer.appendBuffer(silence);
+						}
+						flushingPhase++;
+					}
+				}
+			}, flushTime);
 			resolve(i16buffer=>{
+				flushingPhase = 0;
 				if(sourceBuffer.updating){
 					queue.push(i16buffer);
 				}else{
 					sourceBuffer.appendBuffer(i16buffer);
 				}
 			});
-			sourceBuffer.addEventListener('updateend', function () {
-				if(queue.length>0){
+			sourceBuffer.addEventListener('updateend', ()=>{
+				if(!sourceBuffer.updating && queue.length>0){
+					flushingPhase = 0;
 					sourceBuffer.appendBuffer(queue.shift());
 				}
 			});
@@ -134,6 +157,64 @@ function player(sampleRate,{context,channels}=audio){
 	};
 }
 
+function createSoundBufferingProcessor(flushThreshold,cb){
+	var buffers = [];
+	function flush(){
+		if(buffers.length>0){
+			cb(float32Concat(buffers.splice(0)));
+		}
+	}
+	return (chunk)=>{
+		if(globalSettings.mute){
+			flush();
+		}else{
+			var briefResult = briefSoundThresholdAnalysis(chunk,globalSettings.threshold,globalSettings.briefSkipFactor);
+			if(briefResult){
+				if(buffers.length===0){
+					buffers.push(chunk.slice(0));
+				}else{
+					var {thoroughFactor} = globalSettings;
+					for(var i=0;i<(chunk.length>>thoroughFactor);i++){
+						let from = i<<thoroughFactor;
+						if(!soundThresholdAnalysis(chunk,from,1<<thoroughFactor,globalSettings.threshold)){
+							buffers.push(chunk.slice(0,from));
+							flush();
+							buffers.push(chunk.slice(from));
+							return;
+						}
+					}
+					buffers.push(chunk.slice(0));
+					if(buffers.reduce((p,c)=>p+c.length,0)>flushThreshold){
+						flush();
+					}
+				}
+			}else{
+				flush();
+			}
+		}
+	};
+}
+
+function soundThresholdAnalysis(chunk,from,length,threshold){
+	for(var i=from;i<from+length;i++){
+		var soundLevel = chunk[i];
+		if(soundLevel<-threshold || soundLevel>threshold){
+            return true;
+        }
+    }
+    return false;
+}
+
+function briefSoundThresholdAnalysis(chunk,threshold,skipFactor){
+	for(var i=0;i<(chunk.length>>skipFactor);i++){
+    	var soundLevel = chunk[i<<skipFactor];
+        if(soundLevel<-threshold || soundLevel>threshold){
+            return true;
+        }
+    }
+    return false;
+}
+
 function connectWebsocket(url){
 	return new Promise((resolve,reject)=>{
 		var ws = new WebSocket('ws'+window.location.origin.substring(4) + url);
@@ -152,8 +233,7 @@ function connectWebsocket(url){
 }
 
 function voipV3(url,sampleRate,shouldSend){
-	return Promise.all([recorder(),mp3player()]).then(([r,play])=>{
-		var convertor = mp3convertor();
+	return Promise.all([recorder(),player(sampleRate)]).then(([r,play])=>{
 		var stateChangeListener = Function.nope;
 		var close = Function.nope;
 		var disconnecting = false;
@@ -164,16 +244,7 @@ function voipV3(url,sampleRate,shouldSend){
 					ws.close()
 				};
 				stateChangeListener('active');
-				r.replaceConsumer((buffer)=>{
-					if(shouldSend(buffer)){
-						ws.send(convertor.convert(buffer));
-					}else{
-						var data = convertor.flush();
-						if(data.length>0){
-							ws.send(data);
-						}
-					}
-				});
+				r.replaceConsumer(data=>ws.send(data));
 				ws.setOnMessage(e=>{
 					play(e);
 				}).setOnClose(()=>{
@@ -254,8 +325,9 @@ document.getElementById('connectButton').addEventListener('click',connectToContr
 
 var globalSettings = {
 	mute:false,
-	threshold:0.006,
-	skipFactor:4
+	threshold:0.03,
+	briefSkipFactor:4,
+	thoroughFactor:6
 };
 
 function simpleThresholdAnalysisFunction(chunk,{threshold,skipFactor}=globalSettings){
