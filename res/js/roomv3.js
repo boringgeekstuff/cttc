@@ -168,25 +168,23 @@ function createSoundBufferingProcessor(flushThreshold,cb){
 		if(globalSettings.mute){
 			flush();
 		}else{
-			var briefResult = briefSoundThresholdAnalysis(chunk,globalSettings.threshold,globalSettings.briefSkipFactor);
-			if(briefResult){
-				if(buffers.length===0){
-					buffers.push(chunk.slice(0));
-				}else{
-					var {thoroughFactor} = globalSettings;
-					for(var i=0;i<(chunk.length>>thoroughFactor);i++){
-						let from = i<<thoroughFactor;
-						if(!soundThresholdAnalysis(chunk,from,1<<thoroughFactor,globalSettings.threshold)){
+			if(briefSoundThresholdAnalysis(chunk,globalSettings.threshold,globalSettings.briefSkipFactor)){
+				let length = 1<<globalSettings.thoroughFactor;
+				for(var from=chunk.length-length;from>=0;from-=length){
+					if(!soundThresholdAnalysis(chunk,from,length,globalSettings.threshold)){
+						if(from>0){
 							buffers.push(chunk.slice(0,from));
-							flush();
-							buffers.push(chunk.slice(from));
-							return;
 						}
-					}
-					buffers.push(chunk.slice(0));
-					if(buffers.reduce((p,c)=>p+c.length,0)>flushThreshold){
 						flush();
+						if(from+length<chunk.length){
+							buffers.push(chunk.slice(from+length));
+						}
+						return;
 					}
+				}
+				buffers.push(chunk.slice(0));
+				if(buffers.reduce((p,c)=>p+c.length,0)>flushThreshold){
+					flush();
 				}
 			}else{
 				flush();
@@ -306,7 +304,7 @@ function connectToVoip(url,sampleRate,shouldSend,onDisconnect){
 					break;
 			}
 		});
-	},(e)=>{log(e);playDisconnectSound();});
+	},(e)=>{log(e);playDisconnectSound();onDisconnect();});
 }
 
 function connectToControl(){
@@ -314,7 +312,7 @@ function connectToControl(){
 	connectWebsocket('/control').then(ws=>{
 		ws.setOnClose(()=>log('control close')).setOnMessage(data=>{
 			data = JSON.parse(data);
-			log('Connecting to room' + data.room);
+			log('Connecting to room ' + data.room);
 			ws.close();
 			connectToVoip('/room/' + data.room,data.sampleRate,simpleThresholdAnalysisFunction,()=>this.disabled=false);
 		}).send(JSON.stringify({sampleRate:audio.context().sampleRate}));
