@@ -44,12 +44,12 @@ function recorder({context,channels}=audio){
         var source = context().createMediaStreamSource(stream);
         var processor = context().createScriptProcessor(audio.bufferSizeBySampleRate[context().sampleRate], channels, channels);
         var consumer = null;
-        var bufferingProcessor = createSoundBufferingProcessor(context().sampleRate,(data)=>{
-			if(consumer){
-					consumer(data);
+
+        processor.onaudioprocess = (event)=>{
+        	if(consumer){
+				consumer(event.inputBuffer.getChannelData(0));
 			}
-        });
-        processor.onaudioprocess = (event)=>bufferingProcessor(event.inputBuffer.getChannelData(0));
+        };
         return {
         	start:function(){
         		source.connect(processor);
@@ -89,15 +89,16 @@ function mp3convertor(sampleRate=audio.context().sampleRate,kbps=128,{channels}=
 	};
 }
 
-function mp3player(sampleRate,flushTime,mimeCodec='audio/mpeg'){
+function mp3player(sampleRate,flushInterval,mimeCodec='audio/mpeg'){
 	var audio = new Audio();
 	var source = new MediaSource();
 	audio.src = URL.createObjectURL(source);
-	var silence = mp3convertor(sampleRate).convert(new Float32Array(Math.ceil(flushTime/1000*sampleRate)));
+	var silenceGenerator = mp3convertor(sampleRate);
 
+	function generateSilence(length){
+		return silenceGenerator.convert(new Float32Array(Math.ceil(length*sampleRate)));
+	}
 
-	var flushingFrom = 2;
-	var flushingUntil = 2 + Math.ceil(2000/flushTime);
 	return new Promise((resolve)=>{
 		log('create player');
 		source.addEventListener('sourceopen', function(){
@@ -105,41 +106,130 @@ function mp3player(sampleRate,flushTime,mimeCodec='audio/mpeg'){
 				return;
 			}
 			log('source open');
-			var sourceBuffer = source.addSourceBuffer(mimeCodec);
+			var sourceBuffer = null;
 			var queue = [];
 			var flushingPhase = 0;
-			var flushInterval = setInterval(()=>{
+			var flushIntervalId = false && setInterval(()=>{
 				if(!sourceBuffer.updating){
 					if(queue.length>0){
 						flushingPhase = 0;
 						sourceBuffer.appendBuffer(queue.shift());
 					}else{
-						if(flushingPhase>=flushingFrom && flushingPhase<flushingUntil){
-							log('flushing');
-							sourceBuffer.appendBuffer(silence);
+						if(sourceBuffer.buffered.length>0){
+							if(flushingPhase>0){
+								var length = sourceBuffer.buffered.end(0) - audio.currentTime;
+								var flush = Math.min(flushInterval/1000,length)/flushingPhase;
+								log('flushing ' + length + ' ' + flush);
+								sourceBuffer.appendBuffer(generateSilence(flush));
+							}
+							if(flushingPhase>15){
+								source.removeSourceBuffer(sourceBuffer);
+							}
 						}
 						flushingPhase++;
 					}
 				}
-			}, flushTime);
+			}, flushInterval);
+			function createBuffer(){
+				if(!sourceBuffer){
+					sourceBuffer = source.addSourceBuffer(mimeCodec);
+					log(source.sourceBuffers);
+					sourceBuffer.addEventListener('updateend', ()=>{
+						if(!sourceBuffer.updating){
+							if(queue.length>0){
+								sourceBuffer.appendBuffer(queue.shift());
+							}else{
+								log('remove');
+								//source.removeSourceBuffer(sourceBuffer);
+								//sourceBuffer = null;
+								source.endOfStream();
+							}
+						}else{
+							log('state bugged');
+						}
+					});
+				}else{
+					log('exists');
+				}
+			}
 			resolve(i16buffer=>{
-				flushingPhase = 0;
+				createBuffer();
 				if(sourceBuffer.updating){
 					queue.push(i16buffer);
 				}else{
 					sourceBuffer.appendBuffer(i16buffer);
 				}
 			});
-			sourceBuffer.addEventListener('updateend', ()=>{
-				if(!sourceBuffer.updating && queue.length>0){
-					flushingPhase = 0;
-					sourceBuffer.appendBuffer(queue.shift());
-				}
-			});
 		});
 		audio.play();
 	});
 }
+
+
+function mp3Nextplayer(sampleRate,expectedUpdateRate,mimeCodec='audio/mpeg'){
+	function now(){
+		return new Date().valueOf();
+	}
+	function createPlayer(buffer){
+		var audio = new Audio();
+		var source = new MediaSource();
+		audio.src = URL.createObjectURL(source);
+		var bufferQueue = [buffer];
+		source.addEventListener('sourceopen', function(){
+			log('open');
+			var sourceBuffer = source.addSourceBuffer(mimeCodec);
+			var queue = [];
+			var lastUpdated = now();
+			var updateCheckInterval = setInterval(_=>{
+				if(!sourceBuffer.updating){
+					if(queue.length>0){
+						log('Wrong state fix');
+						sourceBuffer.appendBuffer(queue.shift());
+					}else if(now() - lastUpdated > expectedUpdateRate){
+						log('close idle audio');
+						clearInterval(updateCheckInterval);
+						source.endOfStream();
+						var residualBuffer = [];
+						play = b=>residualBuffer.push(b)
+						audio.onended = ()=>{
+							log('ended');
+							play = createPlayer;
+							residualBuffer.forEach(b=>play(b));
+						};
+					}
+				}
+			},expectedUpdateRate);
+			sourceBuffer.addEventListener('updateend', ()=>{
+				if(sourceBuffer.updating){
+					log('Wrong player state');
+				}else if(queue.length>0){
+					log('repush');
+					sourceBuffer.appendBuffer(queue.shift());
+				}
+			});
+			var player = (i16buffer)=>{
+				lastUpdated = now();
+				if(sourceBuffer.updating){
+					log('queue');
+					queue.push(i16buffer);
+				}else{
+					log('push');
+					sourceBuffer.appendBuffer(i16buffer);
+				}
+			}
+			bufferQueue.forEach(player);
+			play = player;
+		});
+
+		audio.play().then(_=>log('ok'),log);
+		play = b=>bufferQueue.push(b);
+	};
+
+	var play = createPlayer;
+
+	return i16buffer=>play(i16buffer);
+}
+
 
 function player(sampleRate,{context,channels}=audio){
 	log('player at ' + sampleRate);
@@ -231,7 +321,8 @@ function connectWebsocket(url){
 }
 
 function voipV3(url,sampleRate,shouldSend){
-	return Promise.all([recorder(),player(sampleRate)]).then(([r,play])=>{
+	return recorder().then(r=>{
+		play = mp3Nextplayer(sampleRate,250);
 		var stateChangeListener = Function.nope;
 		var close = Function.nope;
 		var disconnecting = false;
@@ -242,7 +333,17 @@ function voipV3(url,sampleRate,shouldSend){
 					ws.close()
 				};
 				stateChangeListener('active');
-				r.replaceConsumer(data=>ws.send(data));
+				var convertor = mp3convertor();
+				r.replaceConsumer(data=>{
+					if(shouldSend(data)){
+						data = convertor.convert(data);
+					}else{
+						data = convertor.flush();
+					}
+					if(data.length>0){
+						ws.send(data);
+					}
+				});
 				ws.setOnMessage(e=>{
 					play(e);
 				}).setOnClose(()=>{
@@ -325,7 +426,8 @@ var globalSettings = {
 	mute:false,
 	threshold:0.03,
 	briefSkipFactor:4,
-	thoroughFactor:6
+	thoroughFactor:6,
+	noComfortingNoise:false
 };
 
 function simpleThresholdAnalysisFunction(chunk,{threshold,skipFactor}=globalSettings){
@@ -343,6 +445,9 @@ function simpleThresholdAnalysisFunction(chunk,{threshold,skipFactor}=globalSett
 
 
 function comfortingNoise(loudness=globalSettings.threshold*Math.pow(magic,-4),{context}=audio){
+	if(globalSettings.noComfortingNoise){
+		return Function.nope;
+	}
     var node = context().createBufferSource();
     var alignment = 4096;
     var buffer = context().createBuffer(1, Math.floor(context().sampleRate/alignment)*alignment, context().sampleRate)
