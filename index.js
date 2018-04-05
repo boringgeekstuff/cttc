@@ -44,7 +44,7 @@ server = new WebSocketServer({
 
 
 var websocketHandlers = [
-    [/\/room\/([0-9]+)/,roomHandler],
+    [/\/room\/([0-9]+)(?:\/([0-9]+))?/,roomHandler],
     [/control/,controlHandler]
 ];
 
@@ -64,11 +64,11 @@ httpServer.on('upgrade', (request, socket, head) => {
 });
 
 var rooms = {};
-var NOBODY_CONNECTED_TIMEOUT = 1000;
+var NOBODY_CONNECTED_TIMEOUT = 10000;
 
 var clientsCounter = 0;
 
-function roomHandler(request, socket, head, roomId){
+function roomHandler(request, socket, head, roomId, timeout=NOBODY_CONNECTED_TIMEOUT){
     var clientId = ++clientsCounter;
     if(rooms[roomId]==true){
         socket.destroy();
@@ -88,7 +88,7 @@ function roomHandler(request, socket, head, roomId){
             log(`Host ${clientId} kicked from room ${roomId}`);
             delete rooms[roomId];
             request.destroy();
-        },NOBODY_CONNECTED_TIMEOUT);
+        },timeout);
         var visitorFound = false;
         socket.on('close',()=>{
             if(!visitorFound){
