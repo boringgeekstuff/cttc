@@ -115,7 +115,7 @@ function SimpleMP3Player(initialBuffers, mimeCodec){
 	var control = {
 		play : $=>audio.play(),
 		appendBuffer : b=>queue.push(b),
-		endOfStream : $=>{
+		endOfStream : fn=>{
 			stopping=true;
 			audio.onended = fn;
 		}
@@ -139,7 +139,7 @@ function SimpleMP3Player(initialBuffers, mimeCodec){
 		};
 		control.endOfStream = fn=>{
 			stopping = true;
-			if(queue.length===0 && !sourceBuffer.updating){
+			if(queue.length===0 && !sourceBuffer.updating && source.readyState === 'open'){
 				source.endOfStream();
 			}
 			audio.onended = fn;
@@ -156,7 +156,7 @@ function now(){
 	return new Date().valueOf();
 }
 
-function yetAnotherMP3Player(expectedBufferInterval, mimeCodec='audio/mpeg'){
+function yetAnotherMP3Player(expectedBufferInterval, timeFlush, mimeCodec='audio/mpeg'){
 	var currentPlayer;
 	var schedulePlay = justCallCB;
 	function flushCurrent(){
@@ -166,14 +166,16 @@ function yetAnotherMP3Player(expectedBufferInterval, mimeCodec='audio/mpeg'){
 		currentPlayer = null;
 	}
 	var lastBuffer = now();
-	var interval = setInterval($=>{
-		if(currentPlayer && now() - lastBuffer > expectedBufferInterval){
-			flushCurrent();
-		}
-	},expectedBufferInterval);
+	if(timeFlush){
+		var interval = setInterval($=>{
+			if(currentPlayer && now() - lastBuffer > expectedBufferInterval){
+				flushCurrent();
+			}
+		},expectedBufferInterval);
+	}
 	return b=>{
 		lastBuffer = now();
-		var isFlushBuffer = b.length<1000;
+		var isFlushBuffer = b.byteLength<1000;
 		if(currentPlayer){
 			currentPlayer.appendBuffer(b);
 		}else{
@@ -221,9 +223,9 @@ function connectWebsocket(url){
 	})
 }
 
-function voipV3(url,shouldSend,filter){
+function voipV3(url,shouldSend,filter,timeFlush){
 	return recorder(filter?recordSettings:recordSettingsNoProcessing).then(r=>{
-		play = yetAnotherMP3Player(100);
+		play = yetAnotherMP3Player(100,timeFlush);
 		var stateChangeListener = Function.nope;
 		var close = Function.nope;
 		var disconnecting = false;
@@ -275,12 +277,12 @@ function voipV3(url,shouldSend,filter){
 	});
 }
 
-function connectToVoip(url,shouldSend,onDisconnect,filter){
+function connectToVoip(url,shouldSend,onDisconnect,filter,timeFlush){
 	var disconnectButton = document.getElementById('disconnectButton');
 	function playDisconnectSound(){
 		new Audio('/res/audio/disconnected.wav').play();
 	}
-	voipV3(url,shouldSend,filter).then(voip=>{
+	voipV3(url,shouldSend,filter,timeFlush).then(voip=>{
 		new Audio('/res/audio/connected.wav').play();
 		var stopNoise = comfortingNoise();
 		window.onbeforeunload = voip.close;
@@ -312,7 +314,7 @@ function connectToVoip(url,shouldSend,onDisconnect,filter){
 
 document.getElementById('connectButton').addEventListener('click',function(){
 	this.disabled=true;
-	connectToVoip('/room/' + 1,simpleThresholdAnalysisFunction,()=>this.disabled=false,document.getElementById('noFilter').checked);
+	connectToVoip('/room/' + 1,simpleThresholdAnalysisFunction,()=>this.disabled=false,document.getElementById('noFilter').checked,document.getElementById('timeFlush').checked);
 });
 
 
