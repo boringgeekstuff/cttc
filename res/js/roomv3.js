@@ -57,8 +57,7 @@ function recorder(recordSettings,{context,channels}=audio){
         };
         return {
         	start:function(){
-        		source.connect(processor);
-        		processor.connect(context().destination);
+        		source.connect(context().createGain()).connect(processor).connect(context().destination);
         		return this;
         	},
 			replaceConsumer:function(c){
@@ -191,7 +190,14 @@ function yetAnotherMP3Player(expectedBufferInterval, timeFlush, mimeCodec='audio
 function mp3convertor(sampleRate=audio.context().sampleRate,kbps=128,{channels}=audio){
 	var mp3encoder = new lamejs.Mp3Encoder(channels,sampleRate,kbps);
 	return {
-		convert:(f32buffer)=>mp3encoder.encodeBuffer(new Int16Array(f32buffer.map((s)=>(s<0)?s*0x8000:s*0x7FFF))),
+		convert:(f32buffer)=>{
+			var i16array = new Int16Array(f32buffer.length);
+			for(var i in f32buffer){
+				var v = f32buffer[i];
+				i16array[i]=Math.floor(v*((v<0)?0x8000:0x7FFF));
+			}
+			return mp3encoder.encodeBuffer(i16array)
+		},
 		flush:()=>mp3encoder.flush()
 	};
 }
