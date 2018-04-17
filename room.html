@@ -1,17 +1,23 @@
 <!DOCTYPE html>
 <html>
 	<body>
-		<button id="calibrateButton">Откалибровать микрофон</button>
-		<button id="connectButton">Подключиться</button>
-		<button id="disconnectButton" disabled>Отключиться</button>
-		<button id="muteButton">Выключить микрофон</button><br>
-		<input id="noFilter" type="checkbox" checked><label for="noNoise">Встроенная фильтрация звука</label><br>
-		<input id="noNoise" type="checkbox"><label for="noNoise">Жесткое шумоподавление</label><br>
-		<input id="timeFlush" type="checkbox" checked=""><label for="timeFlush">Режим минимальной задержки</label>
+		<fieldset>
+			<legend>Соединение</legend>
+			<button id="connectButton">Подключиться</button>
+			<button id="disconnectButton" disabled>Отключиться</button>
+			<button id="muteButton">Выключить микрофон</button>
+		</fieldset>
+		<fieldset>
+			<legend>Настройки</legend>
+			<button id="calibrateButton">Откалибровать микрофон</button><button id="clearCalibration">Сбросить калибровку</button><span id="calibrationStatus"></span><br>
+			<input id="noFilter" type="checkbox" checked=""><label for="noFilter">Встроенная фильтрация звука</label><br>
+			<input id="noNoise" type="checkbox"><label for="noNoise">Жесткое шумоподавление</label><br>
+			<input id="timeFlush" type="checkbox"><label for="timeFlush">Режим минимальной задержки</label>
+		</fieldset>
 		<script src="/res/js/util.js"></script>
 		<script src="/res/js/lame.all.js"></script>
-		<script src="/res/js/noiseThresholdSetup.js"></script>
+		<script src="/res/js/soundUtils.js"></script>
+		<script src="/res/js/player.js"></script>
 		<script src="/res/js/roomv3.js"></script>
-		<table id="stats"></table>
 	</body>
 </html>
